@@ -34,6 +34,15 @@ class HamiltonianRequest(BaseModel):
     region: str
     solver: str
 
+# Create a reusable DWaveSampler and EmbeddingComposite if possible
+sampler_cache = {}
+
+def get_sampler(region, token, solver):
+    key = (region, token, solver)
+    if key not in sampler_cache:
+        sampler_cache[key] = EmbeddingComposite(DWaveSampler(region=region, token=token, solver=solver))
+    return sampler_cache[key]
+
 @app.get("/")
 async def read_root():
     return {"message": "Welcome to the QUBO Solver API"}
@@ -52,22 +61,23 @@ async def solve_qubo(request: QuboRequest):
 @app.post("/solve_hamiltonian")
 async def solve_hamiltonian(request: HamiltonianRequest):
     try:
-        logging.info("Begin solving")
-        sampler = DWaveSampler(region=request.region, token=request.token, solver=request.solver)
-        sampler = EmbeddingComposite(sampler)
+        # Use the reusable sampler
+        sampler = get_sampler(request.region, request.token, request.solver)
         # Convert Hamiltonian to QUBO or use directly as required
         qubo = hamiltonian_to_qubo(request.hamiltonian)
         response = sampler.sample_qubo(qubo, num_reads=5000)
-        solutions = response.record
         solutions = []
 
         for sample, energy, num_occurrences, cbf in response.record:
-            logging.info(f"Sample: {sample}, energy: {energy}, num: {num_occurrences}")
             solutions.append({
                 "sample": sample.tolist(),
                 "energy": float(energy),
                 "num_occurrences": int(num_occurrences)
             })
+        
+        response = None
+        sampler = None
+        qubo = None
 
         return {"solutions": solutions}
     except Exception as e:
