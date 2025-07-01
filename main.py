@@ -66,7 +66,7 @@ async def read_root():
     return {"message": "Welcome to the QUBO Solver API"}
 
 @app.post("/solve_qubo", dependencies=[Depends(verify_token)])
-@limiter.limit("15/minute")
+@limiter.limit("10/minute")
 async def solve_qubo(request: QuboRequest):
     try:
         sampler = EmbeddingComposite(
@@ -79,7 +79,7 @@ async def solve_qubo(request: QuboRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/solve_hamiltonian", dependencies=[Depends(verify_token)])
-@limiter.limit("15/minute")
+@limiter.limit("10/minute")
 async def solve_hamiltonian(request: HamiltonianRequest):
     try:
         sampler = get_sampler(request.region, request.solver)
