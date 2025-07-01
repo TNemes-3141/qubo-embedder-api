@@ -1,92 +1,105 @@
 import logging
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
+import os
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
-from typing import List, Dict, Any
-import json
+from typing import List, Dict
+from dotenv import load_dotenv
 from dwave.system import DWaveSampler, EmbeddingComposite
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import numpy as np
+
+# Load environment variables
+load_dotenv()
+EXPECTED_API_TOKEN = os.getenv("API_TOKEN")
+DWAVE_TOKEN = os.getenv("DWAVE_TOKEN")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Rate Limiting
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI()
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, lambda r, e: JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"}))
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Allow requests from your Next.js frontend during development
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Auth Dependency
+api_key_header = APIKeyHeader(name="Authorization")
 
+def verify_token(token: str = Depends(api_key_header)):
+    if token != EXPECTED_API_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid API token")
+    return token
+
+# Models
 class QuboRequest(BaseModel):
     qubo: Dict[str, Dict[str, float]]
-    token: str
     region: str
     solver: str
 
 class HamiltonianRequest(BaseModel):
     hamiltonian: List[List[float]]
-    token: str
     region: str
     solver: str
 
-# Create a reusable DWaveSampler and EmbeddingComposite if possible
+# Sampler caching
 sampler_cache = {}
 
-def get_sampler(region, token, solver):
-    key = (region, token, solver)
+def get_sampler(region: str, solver: str):
+    key = (region, solver)
     if key not in sampler_cache:
-        sampler_cache[key] = EmbeddingComposite(DWaveSampler(region=region, token=token, solver=solver))
+        sampler_cache[key] = EmbeddingComposite(
+            DWaveSampler(region=region, token=DWAVE_TOKEN, solver=solver)
+        )
     return sampler_cache[key]
 
-@app.get("/")
+# ENDPOINTS
+
+@app.get("/", dependencies=[Depends(verify_token)])
+@limiter.limit("20/minute")
 async def read_root():
     return {"message": "Welcome to the QUBO Solver API"}
 
-@app.post("/solve_qubo")
+@app.post("/solve_qubo", dependencies=[Depends(verify_token)])
+@limiter.limit("15/minute")
 async def solve_qubo(request: QuboRequest):
     try:
-        sampler = DWaveSampler(region=request.region, token=request.token, solver=request.solver)
-        sampler = EmbeddingComposite(sampler)
+        sampler = EmbeddingComposite(
+            DWaveSampler(region=request.region, token=DWAVE_TOKEN, solver=request.solver)
+        )
         response = sampler.sample_qubo(request.qubo)
         solutions = response.record
         return {"solutions": solutions.tolist()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/solve_hamiltonian")
+@app.post("/solve_hamiltonian", dependencies=[Depends(verify_token)])
+@limiter.limit("15/minute")
 async def solve_hamiltonian(request: HamiltonianRequest):
     try:
-        # Use the reusable sampler
-        sampler = get_sampler(request.region, request.token, request.solver)
-        # Convert Hamiltonian to QUBO or use directly as required
+        sampler = get_sampler(request.region, request.solver)
         qubo = hamiltonian_to_qubo(request.hamiltonian)
         response = sampler.sample_qubo(qubo, num_reads=5000)
-        solutions = []
 
-        for sample, energy, num_occurrences, cbf in response.record:
-            solutions.append({
+        solutions = [
+            {
                 "sample": sample.tolist(),
                 "energy": float(energy),
                 "num_occurrences": int(num_occurrences)
-            })
-        
-        response = None
-        sampler = None
-        qubo = None
-
+            }
+            for sample, energy, num_occurrences, _ in response.record
+        ]
         return {"solutions": solutions}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 def hamiltonian_to_qubo(hamiltonian: List[List[float]]):
     qubo = {(i, i): 0.0 for i in range(len(hamiltonian))}
-    
-    # Necessary to keep the order of the sample columns consistent
     for index, value in np.ndenumerate(hamiltonian):
         if value != 0:
             qubo[index] = value
