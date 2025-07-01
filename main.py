@@ -62,7 +62,7 @@ def get_sampler(region: str, solver: str):
 
 @app.get("/", dependencies=[Depends(verify_token)])
 @limiter.limit("20/minute")
-async def read_root():
+async def read_root(request: Request):
     return {"message": "Welcome to the QUBO Solver API"}
 
 @app.post("/solve_qubo", dependencies=[Depends(verify_token)])
