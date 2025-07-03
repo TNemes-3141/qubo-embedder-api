@@ -39,24 +39,14 @@ def verify_token(token: str = Depends(api_key_header)):
 # Models
 class QuboRequest(BaseModel):
     qubo: Dict[str, Dict[str, float]]
-    region: str
-    solver: str
 
 class HamiltonianRequest(BaseModel):
     hamiltonian: List[List[float]]
-    region: str
-    solver: str
 
-# Sampler caching
-sampler_cache = {}
-
-def get_sampler(region: str, solver: str):
-    key = (region, solver)
-    if key not in sampler_cache:
-        sampler_cache[key] = EmbeddingComposite(
-            DWaveSampler(region=region, token=DWAVE_TOKEN, solver=solver)
-        )
-    return sampler_cache[key]
+# Sampler
+SAMPLER = EmbeddingComposite(
+    DWaveSampler(token=DWAVE_TOKEN, solver=dict(topology__type='pegasus'))
+)
 
 # ENDPOINTS
 
@@ -67,12 +57,9 @@ async def read_root(request: Request):
 
 @app.post("/solve_qubo", dependencies=[Depends(verify_token)])
 @limiter.limit("10/minute")
-async def solve_qubo(request: QuboRequest):
+async def solve_qubo(request: Request, payload: QuboRequest):
     try:
-        sampler = EmbeddingComposite(
-            DWaveSampler(region=request.region, token=DWAVE_TOKEN, solver=request.solver)
-        )
-        response = sampler.sample_qubo(request.qubo)
+        response = SAMPLER.sample_qubo(payload.qubo)
         solutions = response.record
         return {"solutions": solutions.tolist()}
     except Exception as e:
@@ -80,11 +67,10 @@ async def solve_qubo(request: QuboRequest):
 
 @app.post("/solve_hamiltonian", dependencies=[Depends(verify_token)])
 @limiter.limit("10/minute")
-async def solve_hamiltonian(request: HamiltonianRequest):
+async def solve_hamiltonian(request: Request, payload: HamiltonianRequest):
     try:
-        sampler = get_sampler(request.region, request.solver)
-        qubo = hamiltonian_to_qubo(request.hamiltonian)
-        response = sampler.sample_qubo(qubo, num_reads=5000)
+        qubo = hamiltonian_to_qubo(payload.hamiltonian)
+        response = SAMPLER.sample_qubo(qubo, num_reads=1000)
 
         solutions = [
             {
