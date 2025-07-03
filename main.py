@@ -39,9 +39,11 @@ def verify_token(token: str = Depends(api_key_header)):
 # Models
 class QuboRequest(BaseModel):
     qubo: Dict[str, Dict[str, float]]
+    label: str
 
 class HamiltonianRequest(BaseModel):
     hamiltonian: List[List[float]]
+    label: str
 
 # Sampler
 SAMPLER = EmbeddingComposite(
@@ -59,7 +61,7 @@ async def read_root(request: Request):
 @limiter.limit("10/minute")
 async def solve_qubo(request: Request, payload: QuboRequest):
     try:
-        response = SAMPLER.sample_qubo(payload.qubo)
+        response = SAMPLER.sample_qubo(payload.qubo, num_reads=1000, label=payload.label)
         solutions = response.record
         return {"solutions": solutions.tolist()}
     except Exception as e:
@@ -70,7 +72,7 @@ async def solve_qubo(request: Request, payload: QuboRequest):
 async def solve_hamiltonian(request: Request, payload: HamiltonianRequest):
     try:
         qubo = hamiltonian_to_qubo(payload.hamiltonian)
-        response = SAMPLER.sample_qubo(qubo, num_reads=1000)
+        response = SAMPLER.sample_qubo(qubo, num_reads=1000, label=payload.label)
 
         solutions = [
             {
